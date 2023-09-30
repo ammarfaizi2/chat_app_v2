@@ -14,13 +14,22 @@
 
 #include "func.h"
 
-static const char server_addr[] = "127.0.0.1";
-static uint16_t server_port = 8787;
-
 static int create_socket(void)
 {
+	uint16_t server_port = 8787;
+	char *server_addr, *tmp;
 	struct sockaddr_in addr;
 	int fd;
+
+	server_addr = getenv("CHAT_SERVER_ADDR");
+	if (!server_addr) {
+		printf("Missing CHAT_SERVER_ADDR var!\n");
+		return -1;
+	}
+
+	tmp = getenv("CHAT_SERVER_PORT");
+	if (tmp)
+		server_port = (uint16_t)atoi(tmp);
 
 	fd = socket(AF_INET, SOCK_STREAM, 0);
 	if (fd < 0) {
