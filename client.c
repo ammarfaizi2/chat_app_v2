@@ -139,6 +139,11 @@ static int process_input_user(int tcp_fd, struct data *d)
 	if (!strcmp(d->data, "exit"))
 		return -1;
 
+	if (!strcmp(d->data, "clear")) {
+		printf("\ec");
+		return 0;
+	}
+
 	return send_message_to_server(tcp_fd, d);
 }
 
@@ -172,8 +177,11 @@ static void start_event_loop(int tcp_fd)
 		if (fds[0].revents & POLLIN) {
 			if (get_input_user(d) < 0)
 				break;
-			if (d->len == 1)
+			if (d->len == 1) {
+				printf("Enter your message: ");
+				fflush(stdout);
 				continue;
+			}
 			if (process_input_user(tcp_fd, d) < 0)
 				break;
 		}
