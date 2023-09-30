@@ -163,6 +163,8 @@ static void start_event_loop(int tcp_fd)
 		if (fds[0].revents & POLLIN) {
 			if (get_input_user(d) < 0)
 				break;
+			if (d->len == 1)
+				continue;
 			if (process_input_user(tcp_fd, d) < 0)
 				break;
 		}
