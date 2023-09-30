@@ -49,7 +49,6 @@ static int get_input_user(struct data *d)
 {
 	size_t len;
 
-	printf("Enter your message: ");
 	if (!fgets(d->data, MAX_DATA_LEN, stdin)) {
 		printf("EOF!\n");
 		return -1;
@@ -70,7 +69,7 @@ static int get_messages_from_server(int tcp_fd)
 	struct data_srv *d;
 	ssize_t ret;
 
-	printf("[ Getting messages from the server... ]\n");
+	putchar('\r');
 	d = malloc(sizeof(*d) + MAX_DATA_LEN);
 	if (!d)
 		return -1;
@@ -80,10 +79,10 @@ static int get_messages_from_server(int tcp_fd)
 		if (ret < 0) {
 
 			ret = errno;
-			free(d);
 			if (ret == EAGAIN || ret == EINTR)
-				return 0;
+				break;
 
+			free(d);
 			return -1;
 		}
 
@@ -105,6 +104,8 @@ static int get_messages_from_server(int tcp_fd)
 		}
 	}
 
+	printf("Enter your message: ");
+	fflush(stdout);
 	free(d);
 	return 0;
 }
@@ -129,26 +130,48 @@ static int process_input_user(int tcp_fd, struct data *d)
 	if (!strcmp(d->data, "exit"))
 		return -1;
 
-	if (!strcmp(d->data, "get_msg"))
-		return get_messages_from_server(tcp_fd);
-
 	return send_message_to_server(tcp_fd, d);
 }
 
 static void start_event_loop(int tcp_fd)
 {
+	struct pollfd fds[2];
 	struct data *d;
+	int ret;
 
 	d = malloc(sizeof(*d) + MAX_DATA_LEN);
 	if (!d)
 		return;
 
-	while (1) {
-		if (get_input_user(d) < 0)
-			break;
+	fds[0].fd = STDIN_FILENO;
+	fds[0].events = POLLIN;
+	fds[0].revents = 0;
 
-		if (process_input_user(tcp_fd, d) < 0)
+	fds[1].fd = tcp_fd;
+	fds[1].events = POLLIN;
+	fds[1].revents = 0;
+
+	printf("Enter your message: ");
+	fflush(stdout);
+	while (1) {
+		ret = poll(fds, 2, -1);
+		if (ret < 0) {
+			perror("poll");
 			break;
+		}
+
+		if (fds[0].revents & POLLIN) {
+			if (get_input_user(d) < 0)
+				break;
+			if (process_input_user(tcp_fd, d) < 0)
+				break;
+		}
+
+		if (fds[1].events & POLLIN) {
+			ret = get_messages_from_server(tcp_fd);
+			if (ret < 0)
+				break;
+		}
 	}
 	free(d);
 }

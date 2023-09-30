@@ -14,7 +14,7 @@
 
 #include "func.h"
 
-static const char bind_addr[] = "127.0.0.1";
+static const char bind_addr[] = "0.0.0.0";
 static uint16_t bind_port = 8787;
 
 #define MAX_CLIENTS 10
