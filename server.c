@@ -295,7 +295,7 @@ static void start_event_loop(int tcp_fd)
 	}
 
 out_free:
-	for (i = 0; i < 10; i++) {
+	for (i = 0; i < MAX_CLIENTS; i++) {
 		if (ctx.clients[i].data)
 			free(ctx.clients[i].data);
 		if (ctx.clients[i].fd > 0)
