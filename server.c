@@ -230,10 +230,12 @@ static int sync_client_chat_history(struct server_ctx *ctx, struct client_state 
 		ret = send(cs->fd, pkt, send_len, 0);
 		if (ret < 0) {
 			perror("send");
+			free(pkt);
 			return -1;
 		}
 	}
 
+	free(pkt);
 	return 0;
 }
 
