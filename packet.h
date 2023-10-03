@@ -45,6 +45,10 @@ enum {
 
 #define PKT_HDR_LEN 4
 
+#ifndef offsetof
+#define offsetof(type, member) ((size_t) &((type *)0)->member)
+#endif
+
 struct packet {
 	uint8_t		type;
 	uint8_t		__pad;

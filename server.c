@@ -182,12 +182,78 @@ static int poll_for_events(struct server_ctx *ctx)
 	return ret;
 }
 
+__attribute__((__noreturn__))
+static void abort_db_corruption(size_t len, size_t exp_len, const char *desc)
+{
+	printf("The database is corrupted! (len != exp_len) %zu != %zu (%s)\n", len, exp_len, desc);
+	abort();
+}
+
+static int sync_client_chat_history(struct server_ctx *ctx, struct client_state *cs)
+{
+	static const size_t meta_len = offsetof(struct packet_msg_id, msg.msg);
+	struct packet *pkt;
+
+	pkt = malloc(sizeof(*pkt));
+	if (!pkt) {
+		perror("malloc");
+		return -1;
+	}
+
+	rewind(ctx->db);
+	pkt->type = SR_PKT_MSG_ID;
+	pkt->__pad = 0;
+	while (1) {
+		uint16_t msg_len_he;
+		size_t body_len;
+		size_t send_len;
+		ssize_t ret;
+		size_t len;
+
+		len = fread(&pkt->msg_id, 1, meta_len, ctx->db);
+		if (!len)
+			break;
+		if (len != meta_len)
+			abort_db_corruption(len, meta_len, "fread(&pkt->msg_id)");
+
+		msg_len_he = ntohs(pkt->msg_id.msg.len);
+		if (msg_len_he > MAX_MSG_LEN)
+			abort_db_corruption(msg_len_he, MAX_MSG_LEN, "msg_len_he");
+
+		len = fread(pkt->msg_id.msg.msg, 1, msg_len_he, ctx->db);
+		if (len != msg_len_he)
+			abort_db_corruption(len, msg_len_he, "fread(pkt->msg_id.msg.msg)");
+
+		body_len = sizeof(pkt->msg_id) + msg_len_he;
+		pkt->len = htons(body_len);
+		send_len = PKT_HDR_LEN + body_len;
+		ret = send(cs->fd, pkt, send_len, 0);
+		if (ret < 0) {
+			perror("send");
+			return -1;
+		}
+	}
+
+	return 0;
+}
+
+static void close_client(struct server_ctx *ctx, uint32_t idx)
+{
+	close(ctx->clients[idx].fd);
+	ctx->clients[idx].fd = -1;
+
+	ctx->fds[idx + 1].fd = -1;
+	ctx->fds[idx + 1].events = 0;
+	ctx->fds[idx + 1].revents = 0;
+}
+
 static int plug_client_in(struct server_ctx *ctx, int fd, struct sockaddr_in *addr)
 {
 	struct client_state *cs = NULL;
 	char addr_str[INET_ADDRSTRLEN];
 	uint16_t port;
 	uint32_t i;
+	int ret;
 
 	for (i = 0; i < ctx->nr_clients; i++) {
 		if (ctx->clients[i].fd < 0) {
@@ -211,6 +277,13 @@ static int plug_client_in(struct server_ctx *ctx, int fd, struct sockaddr_in *ad
 	inet_ntop(AF_INET, &cs->addr.sin_addr, addr_str, sizeof(addr_str));
 	port = ntohs(cs->addr.sin_port);
 	printf("Accepted a new connection from %s:%hu\n", addr_str, port);
+
+	ret = sync_client_chat_history(ctx, cs);
+	if (ret < 0) {
+		close_client(ctx, i);
+		return 0;
+	}
+
 	return 0;
 }
 
@@ -239,16 +312,6 @@ static int accept_new_connection(struct server_ctx *ctx)
 	}
 
 	return 0;
-}
-
-static void close_client(struct server_ctx *ctx, uint32_t idx)
-{
-	close(ctx->clients[idx].fd);
-	ctx->clients[idx].fd = -1;
-
-	ctx->fds[idx + 1].fd = -1;
-	ctx->fds[idx + 1].events = 0;
-	ctx->fds[idx + 1].revents = 0;
 }
 
 static int save_cl_pkt_msg_to_db(struct server_ctx *ctx,
