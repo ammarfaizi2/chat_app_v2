@@ -80,6 +80,30 @@ static inline size_t prep_sr_pkt_msg_id(struct packet *pkt, const char *id,
 	return PKT_HDR_LEN + body_len;
 }
 
+static inline size_t prep_sr_pkt_join(struct packet *pkt, const char *id)
+{
+	size_t body_len = sizeof(pkt->join);
+
+	pkt->type = SR_PKT_JOIN;
+	pkt->__pad = 0;
+	pkt->len = htons(body_len);
+
+	strncpy(pkt->join.identity, id, sizeof(pkt->join.identity));
+	return PKT_HDR_LEN + body_len;
+}
+
+static inline size_t prep_sr_pkt_leave(struct packet *pkt, const char *id)
+{
+	size_t body_len = sizeof(pkt->join);
+
+	pkt->type = SR_PKT_LEAVE;
+	pkt->__pad = 0;
+	pkt->len = htons(body_len);
+
+	strncpy(pkt->leave.identity, id, sizeof(pkt->leave.identity));
+	return PKT_HDR_LEN + body_len;
+}
+
 static inline size_t prep_cl_pkt_msg(struct packet *pkt, const char *msg, size_t len)
 {
 	size_t body_len = sizeof(pkt->msg) + len;

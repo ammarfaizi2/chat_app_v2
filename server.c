@@ -237,14 +237,87 @@ static int sync_client_chat_history(struct server_ctx *ctx, struct client_state 
 	return 0;
 }
 
+static void close_client(struct server_ctx *ctx, uint32_t idx);
+
+static int broadcast_leave_notification(struct server_ctx *ctx, struct client_state *from)
+{
+	struct client_state *to;
+	struct packet *pkt;
+	size_t send_len;
+	ssize_t ret;
+	uint32_t i;
+
+	pkt = malloc(sizeof(*pkt));
+	if (!pkt) {
+		perror("malloc");
+		return -1;
+	}
+
+	send_len = prep_sr_pkt_leave(pkt, stringify_ip4(&from->addr));
+	for (i = 0; i < ctx->nr_clients; i++) {
+		to = &ctx->clients[i];
+
+		/*
+		 * Do not broadcast to sender or inactive client.
+		 */
+		if (from == to || to->fd < 0)
+			continue;
+
+		ret = send(to->fd, pkt, send_len, 0);
+		if (ret < 0) {
+			printf("Client %s disconnected!\n", stringify_ip4(&to->addr));
+			close_client(ctx, i);
+		}
+	}
+
+	free(pkt);
+	return 0;
+}
+
 static void close_client(struct server_ctx *ctx, uint32_t idx)
 {
 	close(ctx->clients[idx].fd);
 	ctx->clients[idx].fd = -1;
+	broadcast_leave_notification(ctx, &ctx->clients[idx]);
 
 	ctx->fds[idx + 1].fd = -1;
 	ctx->fds[idx + 1].events = 0;
 	ctx->fds[idx + 1].revents = 0;
+}
+
+static int broadcast_join_notification(struct server_ctx *ctx, struct client_state *from)
+{
+	struct client_state *to;
+	struct packet *pkt;
+	size_t send_len;
+	ssize_t ret;
+	uint32_t i;
+
+	pkt = malloc(sizeof(*pkt));
+	if (!pkt) {
+		perror("malloc");
+		return -1;
+	}
+
+	send_len = prep_sr_pkt_join(pkt, stringify_ip4(&from->addr));
+	for (i = 0; i < ctx->nr_clients; i++) {
+		to = &ctx->clients[i];
+
+		/*
+		 * Do not broadcast to sender or inactive client.
+		 */
+		if (from == to || to->fd < 0)
+			continue;
+
+		ret = send(to->fd, pkt, send_len, 0);
+		if (ret < 0) {
+			printf("Client %s disconnected!\n", stringify_ip4(&to->addr));
+			close_client(ctx, i);
+		}
+	}
+
+	free(pkt);
+	return 0;
 }
 
 static int plug_client_in(struct server_ctx *ctx, int fd, struct sockaddr_in *addr)
@@ -284,6 +357,7 @@ static int plug_client_in(struct server_ctx *ctx, int fd, struct sockaddr_in *ad
 		return 0;
 	}
 
+	broadcast_join_notification(ctx, cs);
 	return 0;
 }
 

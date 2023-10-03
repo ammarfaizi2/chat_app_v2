@@ -117,6 +117,22 @@ static int handle_sr_pkt_msg_id(struct client_ctx *ctx)
 	return 0;
 }
 
+static int handle_sr_pkt_join(struct client_ctx *ctx)
+{
+	struct packet_join *join = &ctx->pkt.join;
+	printf("\r%s joined the chat!\n", join->identity);
+	ctx->need_reload_prompt = true;
+	return 0;
+}
+
+static int handle_sr_pkt_leave(struct client_ctx *ctx)
+{
+	struct packet_join *join = &ctx->pkt.join;
+	printf("\r%s left the chat!\n", join->identity);
+	ctx->need_reload_prompt = true;
+	return 0;
+}
+
 static int process_server_packet(struct client_ctx *ctx)
 {
 	size_t expected_len;
@@ -142,6 +158,12 @@ try_again:
 	switch (ctx->pkt.type) {
 	case SR_PKT_MSG_ID:
 		ret = handle_sr_pkt_msg_id(ctx);
+		break;
+	case SR_PKT_JOIN:
+		ret = handle_sr_pkt_join(ctx);
+		break;
+	case SR_PKT_LEAVE:
+		ret = handle_sr_pkt_leave(ctx);
 		break;
 	default:
 		printf("The server sent an invalid packet type: %hhu\n", ctx->pkt.type);
