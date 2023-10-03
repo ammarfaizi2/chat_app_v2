@@ -37,6 +37,15 @@ static const char db_file_name[] = "chat_history.bin";
 static const char default_bind_addr[] = "0.0.0.0";
 static uint16_t default_bind_port = 8787;
 
+static const char *stringify_ip4(struct sockaddr_in *addr)
+{
+	static char buf[INET_ADDRSTRLEN + sizeof(":65535")];
+
+	inet_ntop(AF_INET, &addr->sin_addr, buf, sizeof(buf));
+	sprintf(buf + strlen(buf), ":%hu", ntohs(addr->sin_port));
+	return buf;
+}
+
 static int create_socket(void)
 {
 	const char *tmp, *bind_addr;
@@ -232,15 +241,6 @@ static int accept_new_connection(struct server_ctx *ctx)
 	return 0;
 }
 
-static const char *stringify_ip4(struct sockaddr_in *addr)
-{
-	static char buf[INET_ADDRSTRLEN + sizeof(":65535")];
-
-	inet_ntop(AF_INET, &addr->sin_addr, buf, sizeof(buf));
-	sprintf(buf + strlen(buf), ":%hu", ntohs(addr->sin_port));
-	return buf;
-}
-
 static void close_client(struct server_ctx *ctx, uint32_t idx)
 {
 	close(ctx->clients[idx].fd);
@@ -249,6 +249,140 @@ static void close_client(struct server_ctx *ctx, uint32_t idx)
 	ctx->fds[idx + 1].fd = -1;
 	ctx->fds[idx + 1].events = 0;
 	ctx->fds[idx + 1].revents = 0;
+}
+
+static int save_cl_pkt_msg_to_db(struct server_ctx *ctx,
+				 struct packet_msg_id *msg_id, size_t write_len)
+{
+	clearerr(ctx->db);
+	fseek(ctx->db, 0, SEEK_END);
+	fwrite(msg_id, write_len, 1, ctx->db);
+
+	if (ferror(ctx->db)) {
+		perror("fwrite");
+		return -1;
+	}
+
+	fflush(ctx->db);
+	return 0;
+}
+
+static int broadcast_message(struct server_ctx *ctx, struct client_state *from,
+			     struct packet_msg_id *msg_id, size_t msg_len_he)
+{
+	struct client_state *to;
+	struct packet *pkt;
+	size_t send_len;
+	ssize_t ret;
+	uint32_t i;
+
+	pkt = malloc(sizeof(*pkt) + msg_len_he);
+	if (!pkt) {
+		perror("malloc");
+		return -1;
+	}
+
+	send_len = prep_sr_pkt_msg_id(pkt, msg_id->identity, msg_id->msg.msg, msg_len_he);
+	for (i = 0; i < ctx->nr_clients; i++) {
+		to = &ctx->clients[i];
+
+		/*
+		 * Do not broadcast to sender or inactive client.
+		 */
+		if (from == to || to->fd < 0)
+			continue;
+
+		ret = send(to->fd, pkt, send_len, 0);
+		if (ret < 0) {
+			printf("Client %s disconnected!\n", stringify_ip4(&to->addr));
+			close_client(ctx, i);
+		}
+	}
+
+	free(pkt);
+	return 0;
+}
+
+static int handle_cl_pkt_msg(struct server_ctx *ctx, struct client_state *cs)
+{
+	size_t msg_len_he = ntohs(cs->pkt.msg.len);
+	struct packet_msg_id *msg_id;
+	const char *id;
+	size_t wr_len;
+	int ret;
+
+	if (msg_len_he > MAX_MSG_LEN) {
+		printf("Client %s sent too long message (%zu bytes)\n", stringify_ip4(&cs->addr), msg_len_he);
+		return -1;
+	}
+
+	msg_id = malloc(sizeof(*msg_id) + msg_len_he);
+	if (!msg_id) {
+		perror("malloc");
+		return -1;
+	}
+
+	id = stringify_ip4(&cs->addr);
+	strncpy(msg_id->identity, id, sizeof(msg_id->identity));
+	msg_id->msg.len = cs->pkt.msg.len;
+	memcpy(msg_id->msg.msg, cs->pkt.msg.msg, msg_len_he);
+	wr_len = sizeof(*msg_id) + msg_len_he;
+
+	msg_id->msg.msg[msg_len_he - 1] = '\0';
+	ret = save_cl_pkt_msg_to_db(ctx, msg_id, wr_len);
+	if (ret < 0) {
+		free(msg_id);
+		return -1;
+	}
+
+	printf("%s said: %s\n", id, msg_id->msg.msg);
+	broadcast_message(ctx, cs, msg_id, msg_len_he);
+	free(msg_id);
+	return 0;
+}
+
+static int process_client_packet(struct server_ctx *ctx, struct client_state *cs)
+{
+	size_t expected_len;
+	int ret = 0;
+
+try_again:
+	/*
+	 * If we have not received the packet header yet, we can't
+	 * read the packet type, pad, and len. Keep receiving...
+	 */
+	if (cs->recv_len < PKT_HDR_LEN)
+		return 0;
+
+	/*
+	 * If we have not received the packet body yet, keep
+	 * receiving. The packet body length is available in
+	 * cs->pkt.len stored in network endian byte order.
+	 */
+	expected_len = PKT_HDR_LEN + ntohs(cs->pkt.len);
+	if (cs->recv_len < expected_len)
+		return 0;
+
+	switch (cs->pkt.type) {
+	case CL_PKT_MSG:
+		ret = handle_cl_pkt_msg(ctx, cs);
+		break;
+	default:
+		printf("Client %s sent an invalid packet type: %hhu\n", stringify_ip4(&cs->addr), cs->pkt.type);
+		return -1;
+	}
+
+	cs->recv_len -= expected_len;
+	if (cs->recv_len > 0) {
+		char *dst = (char *)&cs->pkt;
+		char *src = dst + expected_len;
+		size_t cp_len = cs->recv_len;
+
+		memmove(dst, src, cp_len);
+		goto try_again;
+	}
+
+	return ret;
 }
 
 static int handle_event(struct server_ctx *ctx, uint32_t idx)
@@ -274,6 +408,13 @@ static int handle_event(struct server_ctx *ctx, uint32_t idx)
 
 	if (ret == 0) {
 		printf("Client %s disconnected\n", stringify_ip4(&cs->addr));
+		close_client(ctx, idx);
+		return 0;
+	}
+
+	cs->recv_len += (size_t)ret;
+	ret = process_client_packet(ctx, cs);
+	if (ret < 0) {
 		close_client(ctx, idx);
 		return 0;
 	}

@@ -4,6 +4,7 @@
 #define _GNU_SOURCE
 #endif
 
+#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -23,8 +24,9 @@ struct client_ctx {
 	int		tcp_fd;
 	struct pollfd	fds[2];
 	struct packet	pkt;
-	size_t		recv_ret;
+	size_t		recv_len;
 	char		msg[MAX_MSG_LEN];
+	bool		need_reload_prompt;
 };
 
 static int create_socket(void)
@@ -107,8 +109,87 @@ static int poll_for_events(struct client_ctx *ctx)
 	return ret;
 }
 
+static int handle_sr_pkt_msg_id(struct client_ctx *ctx)
+{
+	struct packet_msg_id *msg_id = &ctx->pkt.msg_id;
+	printf("\r%s said: %s\n", msg_id->identity, msg_id->msg.msg);
+	ctx->need_reload_prompt = true;
+	return 0;
+}
+
+static int process_server_packet(struct client_ctx *ctx)
+{
+	size_t expected_len;
+	int ret = 0;
+
+try_again:
+	/*
+	 * If we have not received the packet header yet, we can't
+	 * read the packet type, pad, and len. Keep receiving...
+	 */
+	if (ctx->recv_len < PKT_HDR_LEN)
+		return 0;
+
+	/*
+	 * If we have not received the packet body yet, keep
+	 * receiving. The packet body length is available in
+	 * ctx->pkt.len stored in network endian byte order.
+	 */
+	expected_len = PKT_HDR_LEN + ntohs(ctx->pkt.len);
+	if (ctx->recv_len < expected_len)
+		return 0;
+
+	switch (ctx->pkt.type) {
+	case SR_PKT_MSG_ID:
+		ret = handle_sr_pkt_msg_id(ctx);
+		break;
+	default:
+		printf("The server sent an invalid packet type: %hhu\n", ctx->pkt.type);
+		return -1;
+	}
+
+	ctx->recv_len -= expected_len;
+	if (ctx->recv_len > 0) {
+		char *dst = (char *)&ctx->pkt;
+		char *src = dst + expected_len;
+		size_t cp_len = ctx->recv_len;
+
+		memmove(dst, src, cp_len);
+		goto try_again;
+	}
+
+	return ret;
+}
+
 static int handle_server_packet(struct client_ctx *ctx)
 {
+	ssize_t ret;
+	size_t len;
+	char *buf;
+
+	buf = (char *)&ctx->pkt + ctx->recv_len;
+	len = sizeof(ctx->pkt) - ctx->recv_len;
+	ret = recv(ctx->tcp_fd, buf, len, MSG_DONTWAIT);
+	if (ret < 0) {
+
+		ret = errno;
+		if (ret == EAGAIN || ret == EINTR)
+			return 0;
+
+		perror("recv");
+		return -1;
+	}
+
+	if (ret == 0) {
+		printf("Server disconnected!\n");
+		return -1;
+	}
+
+	ctx->recv_len += (size_t)ret;
+	ret = process_server_packet(ctx);
+	if (ret < 0)
+		return -1;
+
 	return 0;
 }
 
@@ -173,8 +254,7 @@ static int handle_user_input(struct client_ctx *ctx)
 	if (ret < 0)
 		return -1;
 
-	printf("Enter your message: ");
-	fflush(stdout);
+	ctx->need_reload_prompt = true;
 	return 0;
 }
 
@@ -199,9 +279,14 @@ static void start_event_loop(struct client_ctx *ctx)
 {
 	int ret;
 
-	printf("Enter your message: ");
-	fflush(stdout);
+	ctx->need_reload_prompt = true;
 	while (1) {
+		if (ctx->need_reload_prompt) {
+			printf("Enter your message: ");
+			fflush(stdout);
+			ctx->need_reload_prompt = false;
+		}
+
 		ret = poll_for_events(ctx);
 		if (ret < 0)
 			break;
