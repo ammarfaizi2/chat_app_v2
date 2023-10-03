@@ -290,9 +290,8 @@ static int handle_events(struct client_ctx *ctx)
 			return -1;
 	}
 
-	if (ctx->fds[1].revents & POLLIN) {
+	if (ctx->fds[1].revents & POLLIN)
 		ret = handle_user_input(ctx);
-	}
 
 	return ret;
 }
