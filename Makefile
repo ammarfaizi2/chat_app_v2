@@ -3,12 +3,13 @@ CFLAGS = -Wall -Wextra -O2 -ggdb3
 
 all: server client
 
-server.o: server.c func.h
-client.o: client.c func.h
+server.o: server.c packet.h
+client.o: client.c packet.h
+
 server: server.o
 client: client.o
 
 clean:
-	rm -f server client
+	rm -vf *.o server client
 
 .PHONY: all clean
