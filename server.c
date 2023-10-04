@@ -609,7 +609,7 @@ int main(void)
 {
 	struct server_ctx ctx;
 	int ret;
-	
+
 	memset(&ctx, 0, sizeof(ctx));
 	ctx.tcp_fd = -1;
 	ret = init_server_ctx(&ctx);
